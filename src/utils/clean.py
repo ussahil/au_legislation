@@ -2,72 +2,98 @@ import fitz
 from pathlib import Path
 
 
+def pdf_to_markdown(input_path: Path):
 
-def pdf_to_markdown(input_path:Path):
     doc = fitz.open(f"../data/raw_data/{input_path}.pdf")
     elements = []
 
     for page in doc:
-        blocks = page.get_text("dict")['blocks']
+        blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_LB)['blocks']
+
         for b in blocks:
-            if "lines"  not in b:
+            if "lines" not in b:
                 continue
-            for line in b['lines']:
-                for span in line['spans']:
+
+            for line in b["lines"]:
+                for span in line["spans"]:
+                    x0, y0, x1, y1 = span["bbox"]
+
                     elements.append({
-                        "text":span['text'],
-                        "size":span['size'],
-                        'font':span['font'],
-                        "bold":"Bold" in span['font'],
+                        "text": span["text"].strip(),
+                        "size": span["size"],
+                        "font": span["font"],
+                        "bold": "Bold" in span["font"],
+                        "x0": x0,
+                        "y0": y0,
+                        "y1": y1,
                     })
 
-# print(elements[0:20])
+    # Remove empty strings
+    elements = [e for e in elements if e["text"]]
 
-#  Lets get all the sizes and then based on the sizes I will add in 
-# sizes = sorted({item['size']for item in elements},reverse=True)
+    # Ignore clear footer text (font size 8 or 9, tiny indent)
+    def is_footer(e):
+        return e["size"] <= 9.5 and e["x0"] < 120
 
-#  First confirm the text that is in 8.0 , 9.0 if it is footers we shall ignore
-# size_8 = []
-# for item in elements:
-#     if item['size'] == 9.0:
-#         size_8.append(item['text'])
+    elements = [e for e in elements if not is_footer(e)]
 
-# Ignore size 8 defintely
+    # --- HEADING CLASSIFICATION LOGIC ---
+    def classify(e):
+        size = e["size"]
+        bold = e["bold"]
+        x0 = e["x0"]
 
-    size_to_md = {
-        20.0: "#",        # Act Title
-        18.0: "##",       # Chapter
-        16.0: "###",      # Part
-        14.0: "####",     # Division
-        13.0: "#####",    # Subdivision
-        12.0: "######",   # Section heading
-        11.5: "",         # Body text
-        11.0: "",         # Body text
-        10.0: "",       # Notes / Example / Supplementary
-        9.0: "",        # Annotations
-    }
+        # Size-based primary hierarchy
+        if size >= 20:
+            return "#"
+        if size >= 18:
+            return "##"
+        if size >= 16:
+            return "###"
+        if size >= 14:
+            return "####"
+        if size >= 13:
+            return "#####"
 
+        # Section heading (most PDFs)
+        if size == 12 and bold:
+            return "######"
+
+        # Paragraph indentation logic
+        if x0 < 60:
+            return ""  # main paragraph
+        if x0 < 80:
+            return ""  # subparagraph
+        if x0 < 120:
+            return ""  # deeper
+
+        return ""  # default body
+
+    # --- BUILD MARKDOWN ---
     md_lines = []
 
-    for item in elements:
-        size = item['size']
-        text = item['text'].strip()
+    prev_y1 = None  # for line-gap detection
 
-        if not text:
-            continue
+    for e in elements:
+        prefix = classify(e)
+        text = e["text"]
 
-        prefix = size_to_md.get(size,"")
+        # Extra spacing if large gap before line = heading
+        if prev_y1 is not None:
+            line_gap = e["y0"] - prev_y1
+            if line_gap > 8 and prefix.startswith("#"):
+                md_lines.append("")  # blank line before heading
 
-        if prefix.startswith("#"):
-            line = f"{prefix} {text}"
-
+        if prefix:
+            md_lines.append(f"{prefix} {text}")
         else:
-            line = text 
+            md_lines.append(text)
 
-        md_lines.append(line)
+        prev_y1 = e["y1"]
 
-    # output_path = "../../data/cleaned_data/C2025C00644VOL01.md"
+    # Output
+    output_file = f"../data/cleaned_data/{input_path}.md"
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(md_lines))
 
-    with  open(f"../data/cleaned_data/{input_path}.md","w",encoding="utf-8") as f:
-        for line in md_lines:
-            f.write(line + '\n')
+    print(f"Markdown written to: {output_file}")
